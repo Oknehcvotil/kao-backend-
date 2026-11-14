@@ -138,50 +138,6 @@ async function sendEmail(quote) {
   return { sent: true, messageId: info.messageId };
 }
 
-async function sendTelegram(quote) {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-  const chatId = process.env.TELEGRAM_CHAT_ID;
-
-  if (!token || !chatId) return { skipped: true, reason: 'Telegram is not configured' };
-
-  const replyLabels = {
-    phone: 'Телефон',
-    email: 'Email',
-    messenger: 'Месенджер',
-  };
-
-  const message = [
-    '🚢 <b>KAO Delivery — новий запит</b>',
-    '',
-    `👤 <b>Ім’я:</b> ${escapeHtml(quote.name)}`,
-    `📞 <b>Телефон:</b> ${escapeHtml(quote.phone)}`,
-    `✉️ <b>Email:</b> ${escapeHtml(quote.email)}`,
-    `💬 <b>Відповідь:</b> ${replyLabels[quote.replyVia]}`,
-    `🌐 <b>Мова:</b> ${quote.language.toUpperCase()}`,
-    '',
-    '<b>Деталі перевезення:</b>',
-    escapeHtml(quote.details),
-  ].join('\n');
-
-  const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      chat_id: chatId,
-      text: message,
-      parse_mode: 'HTML',
-      disable_web_page_preview: true,
-    }),
-  });
-
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Telegram error ${response.status}: ${body.slice(0, 250)}`);
-  }
-
-  return { sent: true };
-}
-
 app.get('/api/health', (_req, res) => {
   res.json({
     ok: true,
@@ -198,39 +154,18 @@ app.post('/api/quote', quoteLimiter, async (req, res) => {
   if (validation.spam) return res.status(200).json({ ok: true });
   if (validation.error) return res.status(400).json({ ok: false, error: validation.error });
 
-  const settled = await Promise.allSettled([sendEmail(quote), sendTelegram(quote)]);
-  const channels = settled.map((result, index) => {
-    const name = index === 0 ? 'email' : 'telegram';
-    if (result.status === 'fulfilled') return { name, ...result.value };
-    return { name, error: result.reason?.message || 'Unknown delivery error' };
-  });
-
-  const delivered = channels.some((channel) => channel.sent);
-  const configured = channels.some((channel) => !channel.skipped);
-
-  if (!configured) {
-    console.error('Quote received, but no delivery channel is configured.');
-    return res.status(503).json({
-      ok: false,
-      error: 'Form delivery is not configured on the server.',
-    });
+  if (!process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASS) {
+    console.error('KAO quote mail is not configured.');
+    return res.status(503).json({ ok: false, error: 'Email delivery is not configured.' });
   }
 
-  if (!delivered) {
-    console.error('Quote delivery failed:', channels);
-    return res.status(502).json({
-      ok: false,
-      error: 'Could not deliver the request.',
-    });
+  try {
+    await sendEmail(quote);
+    return res.status(200).json({ ok: true });
+  } catch (error) {
+    console.error('KAO quote email delivery failed:', error?.message || error);
+    return res.status(502).json({ ok: false, error: 'Could not deliver the request.' });
   }
-
-  const failedChannel = channels.find((channel) => channel.error);
-  if (failedChannel) console.error('One quote delivery channel failed:', channels);
-
-  return res.status(200).json({
-    ok: true,
-    channels: channels.map(({ name, sent, skipped }) => ({ name, sent: Boolean(sent), skipped: Boolean(skipped) })),
-  });
 });
 
 app.use((err, _req, res, _next) => {
@@ -241,6 +176,10 @@ app.use((err, _req, res, _next) => {
   return res.status(500).json({ ok: false, error: 'Internal server error.' });
 });
 
-app.listen(port, () => {
-  console.log(`KAO Delivery backend listening on port ${port}`);
-});
+if (!process.env.VERCEL) {
+  app.listen(port, () => {
+    console.log(`KAO Delivery backend listening on port ${port}`);
+  });
+}
+
+export default app;
