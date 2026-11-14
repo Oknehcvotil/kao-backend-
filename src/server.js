@@ -85,18 +85,19 @@ async function sendTelegram(quote) {
     messenger: 'Месенджер',
   };
 
+  // Telegram plain text avoids HTML entity parsing failures in client-entered data.
   const message = [
-    '🚢 <b>KAO DELIVERY — нова заявка із сайту</b>',
+    '🚢 KAO DELIVERY — нова заявка із сайту',
     '',
-    `👤 <b>Ім’я:</b> ${escapeHtml(quote.name)}`,
-    `📞 <b>Телефон:</b> ${escapeHtml(quote.phone)}`,
-    `✉️ <b>Email:</b> ${escapeHtml(quote.email)}`,
-    `💬 <b>Зв’язатися через:</b> ${replyVia[quote.replyVia]}`,
-    `🌐 <b>Мова сайту:</b> ${quote.language.toUpperCase()}`,
+    `👤 Ім’я: ${quote.name}`,
+    `📞 Телефон: ${quote.phone}`,
+    `✉️ Email: ${quote.email}`,
+    `💬 Зв’язатися через: ${replyVia[quote.replyVia]}`,
+    `🌐 Мова сайту: ${quote.language.toUpperCase()}`,
     '',
-    '<b>Деталі перевезення:</b>',
-    quote.details ? escapeHtml(quote.details) : 'Не вказано',
-  ].join('\n');
+    'Деталі перевезення:',
+    quote.details || 'Не вказано',
+  ].join('\\n');
 
   const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: 'POST',
@@ -104,19 +105,20 @@ async function sendTelegram(quote) {
     body: JSON.stringify({
       chat_id: chatId,
       text: message,
-      parse_mode: 'HTML',
       disable_web_page_preview: true,
     }),
     signal: AbortSignal.timeout(10000),
   });
 
-  if (!response.ok) {
-    throw new Error(`Telegram API rejected message with HTTP ${response.status}`);
-  }
+  const result = await response.json().catch(() => null);
 
-  const result = await response.json();
-  if (!result.ok) {
-    throw new Error('Telegram API did not accept the message.');
+  if (!response.ok || !result?.ok) {
+    // Telegram descriptions such as "can't parse entities" or "chat not found"
+    // help identify delivery failures without logging credentials or customer data.
+    const description = typeof result?.description === 'string'
+      ? result.description.slice(0, 250)
+      : 'Unspecified Telegram error';
+    throw new Error(`Telegram API HTTP ${response.status}: ${description}`);
   }
 }
 
