@@ -99,22 +99,34 @@ async function sendTelegram(quote) {
     quote.details || 'Не вказано',
   ].join('\n');
 
-  const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      chat_id: chatId,
-      text: message,
-      disable_web_page_preview: true,
-    }),
-    signal: AbortSignal.timeout(10000),
-  });
+  const sendToChat = async (destination) => {
+    const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: destination,
+        text: message,
+        disable_web_page_preview: true,
+      }),
+      signal: AbortSignal.timeout(10000),
+    });
 
-  const result = await response.json().catch(() => null);
+    const result = await response.json().catch(() => null);
+    return { response, result };
+  };
+
+  let { response, result } = await sendToChat(chatId);
+
+  // Telegram can migrate normal groups to supergroups, giving them a new ID.
+  // Retry once against the new ID returned by Telegram, without requiring
+  // a manual Vercel environment update.
+  const migratedChatId = result?.parameters?.migrate_to_chat_id;
+  if (!result?.ok && migratedChatId && String(migratedChatId) !== String(chatId)) {
+    console.info('KAO Telegram group migrated to a supergroup; retrying with new chat ID.');
+    ({ response, result } = await sendToChat(migratedChatId));
+  }
 
   if (!response.ok || !result?.ok) {
-    // Telegram descriptions such as "can't parse entities" or "chat not found"
-    // help identify delivery failures without logging credentials or customer data.
     const description = typeof result?.description === 'string'
       ? result.description.slice(0, 250)
       : 'Unspecified Telegram error';
