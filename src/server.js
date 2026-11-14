@@ -97,7 +97,7 @@ async function sendTelegram(quote) {
     '',
     '<b>Деталі перевезення:</b>',
     escapeHtml(quote.details),
-  ].join('\\n');
+  ].join('\n');
 
   const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: 'POST',
