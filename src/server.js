@@ -68,7 +68,6 @@ function validateQuote(quote) {
   if (quote.name.length < 2) return { error: 'Name is required.' };
   if (!isPhone(quote.phone)) return { error: 'Valid phone is required.' };
   if (!isEmail(quote.email)) return { error: 'Valid email is required.' };
-  if (quote.details.length < 5) return { error: 'Shipment details are required.' };
   return {};
 }
 
@@ -96,7 +95,7 @@ async function sendTelegram(quote) {
     `🌐 <b>Мова сайту:</b> ${quote.language.toUpperCase()}`,
     '',
     '<b>Деталі перевезення:</b>',
-    escapeHtml(quote.details),
+    quote.details ? escapeHtml(quote.details) : 'Не вказано',
   ].join('\n');
 
   const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
