@@ -3,7 +3,6 @@ import cors from 'cors';
 import express from 'express';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
-import nodemailer from 'nodemailer';
 
 const app = express();
 const port = Number(process.env.PORT || 5000);
@@ -73,69 +72,53 @@ function validateQuote(quote) {
   return {};
 }
 
-function createMailTransport() {
-  const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS } = process.env;
-  if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) return null;
+async function sendTelegram(quote) {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  const chatId = process.env.TELEGRAM_CHAT_ID;
 
-  return nodemailer.createTransport({
-    host: SMTP_HOST,
-    port: Number(SMTP_PORT || 587),
-    secure: String(process.env.SMTP_SECURE).toLowerCase() === 'true',
-    auth: {
-      user: SMTP_USER,
-      pass: SMTP_PASS,
-    },
-  });
-}
+  if (!token || !chatId) {
+    throw new Error('Telegram delivery is not configured.');
+  }
 
-async function sendEmail(quote) {
-  const transport = createMailTransport();
-  if (!transport) return { skipped: true, reason: 'SMTP is not configured' };
-
-  const replyLabels = {
-    phone: 'Телефон / Phone',
+  const replyVia = {
+    phone: 'Телефон',
     email: 'Email',
-    messenger: 'Месенджер / Messenger',
+    messenger: 'Месенджер',
   };
 
-  const subject = `KAO Delivery — новий запит від ${quote.name}`;
-  const html = `
-    <div style="font-family:Arial,sans-serif;max-width:680px;margin:auto;color:#071827">
-      <div style="background:#071827;color:#fff;padding:24px 28px">
-        <strong style="font-size:20px">KAO DELIVERY</strong>
-        <div style="opacity:.7;margin-top:6px">Новий запит із сайту</div>
-      </div>
-      <div style="padding:28px;border:1px solid #e2e6e8;border-top:0">
-        <p><strong>Ім’я:</strong> ${escapeHtml(quote.name)}</p>
-        <p><strong>Телефон:</strong> ${escapeHtml(quote.phone)}</p>
-        <p><strong>Email:</strong> ${escapeHtml(quote.email)}</p>
-        <p><strong>Бажаний канал:</strong> ${replyLabels[quote.replyVia]}</p>
-        <p><strong>Мова сайту:</strong> ${quote.language.toUpperCase()}</p>
-        <p style="margin-top:24px"><strong>Деталі:</strong></p>
-        <div style="white-space:pre-wrap;line-height:1.6;background:#f5f6f6;padding:18px">${escapeHtml(quote.details)}</div>
-      </div>
-    </div>
-  `;
+  const message = [
+    '🚢 <b>KAO DELIVERY — нова заявка із сайту</b>',
+    '',
+    `👤 <b>Ім’я:</b> ${escapeHtml(quote.name)}`,
+    `📞 <b>Телефон:</b> ${escapeHtml(quote.phone)}`,
+    `✉️ <b>Email:</b> ${escapeHtml(quote.email)}`,
+    `💬 <b>Зв’язатися через:</b> ${replyVia[quote.replyVia]}`,
+    `🌐 <b>Мова сайту:</b> ${quote.language.toUpperCase()}`,
+    '',
+    '<b>Деталі перевезення:</b>',
+    escapeHtml(quote.details),
+  ].join('\\n');
 
-  const info = await transport.sendMail({
-    from: process.env.SMTP_FROM || process.env.SMTP_USER,
-    to: process.env.QUOTE_TO || 'office@kao.delivery',
-    replyTo: quote.email,
-    subject,
-    text: [
-      'KAO Delivery — new website quote',
-      `Name: ${quote.name}`,
-      `Phone: ${quote.phone}`,
-      `Email: ${quote.email}`,
-      `Reply via: ${replyLabels[quote.replyVia]}`,
-      `Language: ${quote.language.toUpperCase()}`,
-      '',
-      quote.details,
-    ].join('\n'),
-    html,
+  const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      chat_id: chatId,
+      text: message,
+      parse_mode: 'HTML',
+      disable_web_page_preview: true,
+    }),
+    signal: AbortSignal.timeout(10000),
   });
 
-  return { sent: true, messageId: info.messageId };
+  if (!response.ok) {
+    throw new Error(`Telegram API rejected message with HTTP ${response.status}`);
+  }
+
+  const result = await response.json();
+  if (!result.ok) {
+    throw new Error('Telegram API did not accept the message.');
+  }
 }
 
 app.get('/api/health', (_req, res) => {
@@ -147,23 +130,23 @@ app.get('/api/health', (_req, res) => {
 });
 
 app.post('/api/quote', quoteLimiter, async (req, res) => {
-  const quote = normalizeQuote(req.body);
+  const quote = normalizeQuote(req.body || {});
   const validation = validateQuote(quote);
 
   // Silently accept honeypot submissions so bots do not learn the protection.
   if (validation.spam) return res.status(200).json({ ok: true });
   if (validation.error) return res.status(400).json({ ok: false, error: validation.error });
 
-  if (!process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASS) {
-    console.error('KAO quote mail is not configured.');
-    return res.status(503).json({ ok: false, error: 'Email delivery is not configured.' });
+  if (!process.env.TELEGRAM_BOT_TOKEN || !process.env.TELEGRAM_CHAT_ID) {
+    console.error('KAO Telegram delivery is not configured.');
+    return res.status(503).json({ ok: false, error: 'Telegram delivery is not configured.' });
   }
 
   try {
-    await sendEmail(quote);
+    await sendTelegram(quote);
     return res.status(200).json({ ok: true });
   } catch (error) {
-    console.error('KAO quote email delivery failed:', error?.message || error);
+    console.error('KAO Telegram delivery failed:', error?.message || error);
     return res.status(502).json({ ok: false, error: 'Could not deliver the request.' });
   }
 });
